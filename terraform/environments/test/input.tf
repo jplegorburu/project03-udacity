@@ -14,3 +14,4 @@ variable virtual_network_name {}
 variable address_prefix_test {}
 variable address_space {}
 
+variable public_key_path {}

@@ -1,34 +1,74 @@
 name: Azure Pipelines
 variables:
   python.version: '3.7.6'
+  azureSubscription: 'ServiceConnectionUdacity'
+  appName: 'myApplicationProject-AppService'
+  vmImageName: 'ubuntu-latest'
 stages:
 - stage: Build
   jobs:
   - job: Build
     pool:
-      name: Hosted Ubuntu 1604
+      vmImage: $(vmImageName)
     steps:
     # Needed for Terraform VM deployment
     # - task: InstallSSHKey@0
     #   inputs:
-    #     knownHostsEntry: 'KNOWN_HOSTS_STRING'
-    #     sshPublicKey: 'PUBLIC_KEY'
+    #     knownHostsEntry: 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDtv9+0/AKjWVcvXb/V62jzA8fpiHiazLU89NkbEcm7+9IiWY6GXgUKyvE4T2lgqncn2OIvSbwNS8OEqhdKrtFlpAGtbgmBv6M9qKqD/35exrvJneDkZujuY37fD0up1w3NBXQdjvfEKayTzbJBTV18yS5Na79WRMPuLaVV1Bw5JYW8tbSbJDxdzyRcjhPpbzIjGqWFR87BXcvayRyBM4gm6gQLXgkGgMxYlOmMMgsjlpGBcfICRl67CZpCRWDNJRj7aHipmPDmORbFirtcOJ0g81Rjgh4vOY7qBu2rWCdxt7d800yPuhV7KTkOzUt2R1Xu13sgNqmRLBKP0mmRnlk9idj3eBL2WZkaf0r7MplLDoWrRcLpXl606gxgcc8HFMowelgfOt2pXbQopKY77RF12vIE0r6ccWxY4FvDU9wyspZxOicQg5KkdleXlRZ8WlG18TMAW8Jf1DemHQNS7BQ1wHQimKZIje2BtE5fnBv4V2Ao7riDJUezO4aGK6rf8GAc7Zj159orjWfSXqR0FMeCGYbFSlrHdjR5sSdmKL5mB1ofNG5qLLj8suoPIuL4yqcZr14Ywpf2l2D4bmDu1GlpDM/5g6R/6ujSaJuKazOIaBjgon67NuCx8mVD0gVadmAzLHk3+xlAiR0YuPvX81Rrld1ItG3Or1eDik8tgIOUUw== juan@cc-a9588c5-85c4bbf6d7-sd8dq'
+    #     sshPublicKey: 'id_rsa.pub'
     #     sshKeySecureFile: 'id_rsa'
+    - task: DownloadSecureFile@1
+      name: publicKey
+      displayName: 'Download Public Key'
+      inputs:
+        secureFile: 'id_rsa.pub'
+    - task: TerraformInstaller@0
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: '0.14.7'
+    - task: TerraformTaskV1@0
+      displayName: 'Initialize Terraform'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
+        backendServiceArm: 'ServiceConnectionUdacity'
+        backendAzureRmResourceGroupName: 'cloud-shell-storage-westeurope'
+        backendAzureRmStorageAccountName: 'csb10032000340a16f8'
+        backendAzureRmContainerName: 'testterraform'
+        backendAzureRmKey: 'terraform.tfstate'
+    - task: TerraformTaskV1@0
+      displayName: 'Deploy Cloud Infrastructure'
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
+        commandOptions: '-var "public_key_path=$(publicKey.secureFilePath)"'
+        environmentServiceNameAzureRM: 'ServiceConnectionUdacity'
+
     - task: ArchiveFiles@2
       displayName: 'Archive FakeRestAPI'
       inputs:
-        rootFolderOrFile: 'path/to/fakerestapi'
+        rootFolderOrFile: 'automatedtesting/jmeter/fakerestapi'
         includeRootFolder: false
         archiveType: 'zip'
         archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip'
     - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip
       displayName: 'Upload Package'
       artifact: drop-fakerestapi
-- stage:
+
+    - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip
+      displayName: 'Upload FakeRestAPI Package'
+      artifact: drop-fakerestapi
+
+    - publish: automatedtesting/selenium/login.py
+      displayName: 'Upload UI Tests definition'
+      artifact: drop-ui-tests
+- stage: Deploy
   jobs:
   - deployment: FakeRestAPI
     pool:
-      vmImage: 'Ubuntu-16.04'
+      vmImage: $(vmImageName)
     environment: 'TEST'
     strategy:
       runOnce:
@@ -37,31 +77,140 @@ stages:
           - task: AzureWebApp@1
             displayName: 'Deploy Azure Web App'
             inputs:
-              azureSubscription: ''
-              appName: ''
+              azureSubscription: '$(azureSubscription)'
+              appName: '$(appName)'
               appType: webApp
               package: $(Pipeline.Workspace)/drop-fakerestapi/$(Build.BuildId)-fakerestapi.zip
-  # - deployment: VMDeploy
-  #   displayName: NAME
-  #   environment:
-  #     name:  ENVIRONMENT NAME
-  #     resourceType: VirtualMachine
-  #     tags: TAG NAME
-  #   strategy:
-  #     runOnce:
-  #       deploy:
-  #         steps:
-  #         - task: Bash@3
-  #           inputs:
-  #             targetType: 'inline'
-  #             script: |
-  #               #! /bin/bash
-                
-  #               sudo apt-get upgrade -y
-  #               sudo apt-get install python3-pip -y
-  #               sudo apt-get install unzip -y
-  #               sudo apt-get install -y chromium-browser
-  #               pip3 install selenium
-  #               export PATH=$PATH:some/path
+              deploymentMethod: 'auto'
+- stage: Tests
+  jobs:
+  - job: Integration
+    displayName: 'Integration Tests'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+            - task: Bash@3
+              displayName: 'Install Postman & Newman'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  #! /bin/bash
+                  sudo snap install postman
+                  sudo npm install -g newman
+                  sudo npm install newman-reporter-junitfull -g      
+            - task: Bash@3
+              displayName: 'Regression Tests'
+              inputs:
+                workingDirectory: 'automatedtesting/postman'
+                targetType: 'inline'
+                script: |
+                  #! /bin/bash
+                  newman run RegressionTest.postman_collection.json \
+                    -e Module03ProjectEnvironment.postman_environment.json \
+                    -r cli,junitfull \
+                    --reporter-junitfull-export JUnitReportRegression.xml
+            
+            - task: Bash@3
+              displayName: 'Data Validation Tests'
+              inputs:
+                workingDirectory: 'automatedtesting/postman'
+                targetType: 'inline'
+                script: |
+                  #! /bin/bash
+                  newman run ValidationTest.postman_collection.json \
+                    -e Module03ProjectEnvironment.postman_environment.json \
+                    -r cli,junitfull \
+                    --reporter-junitfull-export JUnitReportValidation.xml
+            - task: PublishTestResults@2
+              inputs:
+                testResultsFormat: 'JUnit'
+                testResultsFiles: '**/JUnitReport*.xml'
+                testRunTitle: 'Publish test results'
+                searchFolder: 'automatedtesting/postman'
+  - job: Performance
+    displayName: 'Performance Test'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: JMeterInstaller@0
+      displayName: 'Install JMeter 5.2.1'
+      inputs:
+        jmeterVersion: '5.2.1'
+    - task: Bash@3
+      displayName: 'Stress Test Suite'
+      inputs:
+        targetType: 'inline'
+        script: |
+          jmeter -n \
+            -JdataSetPath=$(System.DefaultWorkingDirectory)/automatedtesting/jmeter/data.csv -JnumberOfUsers=20 \
+            -t automatedtesting/jmeter/stress-testSuite.jmx \
+            -l stress-results.jtl \
+            -e \
+            -o stress-test-report
+    - task: publishhtmlreport@1
+      displayName: 'Publish Stress Test Results'
+      inputs:
+        htmlType: 'Jmeter'
+        JmeterReportsPath: '$(Build.SourcesDirectory)/stress-test-report'
+    - publish: $(Build.SourcesDirectory)/stress-test-report
+      displayName: 'Stress HTML Report'
+      artifact: stress-test-report
+    - task: Bash@3
+      displayName: 'Endurance Test Suite'
+      inputs:
+        targetType: 'inline'
+        script: |
+          jmeter -n \
+            -JdataSetPath=$(System.DefaultWorkingDirectory)/automatedtesting/jmeter/data.csv -JnumberOfUsers=20 \
+            -t automatedtesting/jmeter/endurance-testSuite.jmx \
+            -l endurance-results.jtl \
+            -e \
+            -o endurance-test-report
+    - task: publishhtmlreport@1
+      displayName: 'Publish Endurance Test Results'
+      inputs:
+        htmlType: 'Jmeter'
+        JmeterReportsPath: '$(Build.SourcesDirectory)/endurance-test-report'
+    - publish: $(Build.SourcesDirectory)/endurance-test-report
+      displayName: 'Endurance HTML Report'
+      artifact: endurance-test-report
+    - task: Bash@3
+      displayName: 'Print Performance test Logs'
+      inputs:
+        targetType: 'inline'
+        script: |
+          ls -lah stress-test-report /
+          ls -lah endurance-test-report /
+          cat jmeter.log
+  - deployment: DeployVM
+    displayName: Selenium Test
+    environment:
+      name:  TEST
+      resourceType: VirtualMachine
+      resourceName: vmProject
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: Bash@3
+            inputs:
+              targetType: 'inline'
+              script: |
+                #! /bin/bash
+              
+                sudo apt-get upgrade -y
+                sudo apt-get install python3-pip -y
+                sudo apt-get install -y chromium-browser
+                sudo apt-get -y update
+                sudo apt-get install -y unzip xvfb libxi6 libgconf-2-4
+                wget https://chromedriver.storage.googleapis.com/2.41/chromedriver_linux64.zip
+                unzip chromedriver_linux64.zip
+                sudo mv chromedriver /usr/bin/chromedriver
+                sudo chown root:root /usr/bin/chromedriver
+                sudo chmod +x /usr/bin/chromedriver
+                pip3 install selenium
+                python3 ../drop-ui-tests/login.py
+                cat test.log
+                # export PATH=$PATH:some/path
 
 
